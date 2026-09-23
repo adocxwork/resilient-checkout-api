@@ -37,6 +37,89 @@ This API defends against the above problems using resilient backend engineering 
 
 ---
 
+## 🚀 Quick Start & Testing Guide
+
+Want to see the resilience in action? You can spin up the environment and run these tests in under 2 minutes.
+
+### 1. Clone & Start the Environment
+```bash
+git clone https://github.com/yourusername/resilient-checkout-api.git
+cd resilient-checkout-api
+
+# 1. Start the PostgreSQL Database
+docker-compose up -d
+
+# 2. Start the Spring Boot API
+./mvnw spring-boot:run
+```
+*(Note: On startup, the application automatically seeds the database with a "MacBook Pro" [ID: 1] with 10 units in stock).*
+
+### 2. Manual Terminal Tests
+Open a **new terminal window** and copy-paste these commands to test the system's defenses:
+
+**🧪 Test A: Normal Checkout**
+```bash
+curl -X POST http://localhost:8080/api/orders \
+     -H "Content-Type: application/json" \
+     -H "Idempotency-Key: test-key-1" \
+     -d '{"customerId":"CUST-1", "productId": 1, "quantity": 1}'
+```
+*Expected: 201 Created. The order is placed and the simulated payment succeeds.*
+
+**🧪 Test B: The Impatient User (Idempotency)**
+Run the **exact same command** from Test A again.
+*Expected: The API instantly returns the exact same order receipt. It recognized the `Idempotency-Key`, preventing a double-charge and preventing double-deduction of inventory.*
+
+**🧪 Test C: Inventory Protection (Out of Stock)**
+Try to buy 20 MacBooks when only 9 are left:
+```bash
+curl -X POST http://localhost:8080/api/orders \
+     -H "Content-Type: application/json" \
+     -H "Idempotency-Key: test-key-2" \
+     -d '{"customerId":"CUST-1", "productId": 1, "quantity": 20}'
+```
+*Expected: 400 Bad Request ("Not enough stock available"). Pessimistic locking guarantees we never oversell.*
+
+**🧪 Test D: Simulated Payment Failure**
+Our simulated `PaymentClient` is programmed to randomly fail 15% of the time. Run this command 3-4 times (changing the key each time: `key-3`, `key-4`, etc.):
+```bash
+curl -X POST http://localhost:8080/api/orders \
+     -H "Content-Type: application/json" \
+     -H "Idempotency-Key: test-key-3" \
+     -d '{"customerId":"CUST-1", "productId": 1, "quantity": 1}'
+```
+*Expected: Eventually, you will see a response where `"status": "FAILED"` and a payment failure message, proving the system handles gateway declines gracefully without crashing.*
+
+### 3. Automated Chaos Tests (Advanced Scenarios)
+It is difficult to manually trigger exact millisecond race conditions or crash the server mid-transaction via terminal. Instead, run the **Automated Integration Test Suite**, which spawns concurrent threads to prove the advanced resilience patterns work!
+
+Stop the server (`Ctrl + C`), then run:
+```bash
+./mvnw clean test
+```
+**What this tests behind the scenes:**
+1. **Concurrency Race Condition Test**: Spawns 2 background threads that try to buy a single remaining item at the exact same millisecond. Proves pessimistic locking works.
+2. **Circuit Breaker Test**: Forces the payment gateway to fail completely. Proves the Resilience4j Circuit Breaker trips `OPEN` and fast-fails.
+3. **Reconciliation Test**: Deliberately creates a "stuck" `PAYMENT_PENDING` order in the database to simulate a power outage. Proves the `@Scheduled` job finds it and heals it to `PAID`.
+
+---
+
+## 5. Teardown & Data Management
+
+To gracefully shut down the Spring Boot application, send an interrupt signal (`Ctrl + C`) in the terminal.
+
+To stop the PostgreSQL infrastructure while **preserving your data** for the next development session:
+```bash
+docker-compose down
+```
+
+If you need to completely **wipe the local database state** and start fresh:
+```bash
+docker-compose down -v
+```
+
+---
+
 ## 🏗️ Architecture Diagram
 
 ```mermaid
@@ -55,73 +138,9 @@ flowchart TD
 
 ---
 
-## ⚖️ Trade-offs
+## ⚖️ Trade-offs & Limitations
 
-* **Pessimistic vs. Optimistic Locking**: We chose pessimistic locking (`FOR UPDATE`) over optimistic locking (`@Version`) for inventory deduction. While pessimistic locking slightly reduces throughput by locking database rows, it guarantees absolute consistency and prevents users from experiencing frustrating "Please try again" errors when trying to buy high-demand items.
+* **Pessimistic vs. Optimistic Locking**: We chose pessimistic locking (`FOR UPDATE`) over optimistic locking (`@Version`) for inventory. While pessimistic locking slightly reduces throughput by locking database rows, it guarantees absolute consistency and prevents users from experiencing frustrating "Please try again" errors on high-demand items.
 * **Synchronous vs. Asynchronous Payments**: The checkout currently blocks while waiting for the payment gateway. In a massive-scale system (e.g., Amazon), this would be pushed to an async message queue (Kafka). We kept it synchronous here to demonstrate Circuit Breaker patterns directly in the user-facing API layer.
-
----
-
-## 🚀 How to Run It
-
-### 1. Prerequisites
-- Java 21
-- Docker (for PostgreSQL)
-
-### 2. Start the Database
-Spin up the local PostgreSQL database using Docker:
-```bash
-docker-compose up -d
-```
-
-### 3. Start the Application
-Run the Spring Boot server:
-```bash
-./mvnw spring-boot:run
-```
-*(Note: On startup, the application will automatically seed the database with a "MacBook Pro" [ID: 1] with 10 units in stock so you can test immediately).*
-
-### 4. Test the API (Idempotency in Action)
-Open a new terminal window and fire this `curl` command to buy a MacBook:
-```bash
-curl -X POST http://localhost:8080/api/orders \
-     -H "Content-Type: application/json" \
-     -H "Idempotency-Key: idempotency-test-123" \
-     -d '{"customerId":"CUST-1", "productId": 1, "quantity": 1}'
-```
-**Try running that exact command twice.** You will receive the exact same response instantly, without hitting the payment gateway twice or deducting inventory twice!
-
----
-
-## 📈 Load-Testing Numbers
-
-Simulated using `k6` with 100 Virtual Users over 30 seconds against the local Docker container:
-
-| Metric | Result | Notes |
-| :--- | :--- | :--- |
-| **Throughput** | ~450 req/sec | Handled smoothly on a standard MacBook M-series. |
-| **P95 Latency** | ~120ms | Includes simulated network latency to the payment gateway. |
-| **Oversold Items** | **0** | Pessimistic locking successfully serialized all concurrent hits. |
-| **Duplicate Charges** | **0** | DB unique constraints successfully rejected all duplicate idempotency keys. |
-
----
-
-## 🚧 Documented Limitations Honestly
-
 * **Single Point of Failure**: Idempotency is currently enforced via the primary PostgreSQL node. A distributed cache (like Redis) with a TTL would scale much better for high-throughput idempotency checking.
 * **Database Connection Pool Exhaustion**: Because we hold a database connection while waiting for the external network payment call, a massive spike in payment gateway latency could theoretically exhaust the HikariCP connection pool before the Circuit Breaker trips.
-* **Mock Payment Gateway**: The payment gateway is simulated locally. Real-world network latencies and TLS handshakes would lower the raw throughput of this synchronous design.
-
-### 5. Teardown & Data Management
-
-To gracefully shut down the Spring Boot application, send an interrupt signal (`Ctrl + C`) in the terminal.
-
-To stop the PostgreSQL infrastructure while **preserving your data** (via Docker volumes) for the next development session:
-```bash
-docker-compose down
-```
-
-If you need to completely **wipe the local database state** and start fresh (e.g., to clear all test orders and reset inventory):
-```bash
-docker-compose down -v
-```
