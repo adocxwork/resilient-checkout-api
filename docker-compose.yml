@@ -4,11 +4,11 @@ services:
     image: postgres:15-alpine
     container_name: order-process-postgres
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       POSTGRES_DB: orderdb
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
+      POSTGRES_USER: checkout_user
+      POSTGRES_PASSWORD: checkout_pass
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
