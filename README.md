@@ -91,7 +91,7 @@ curl -X POST http://localhost:8080/api/orders \
 *Expected: Eventually, you will see a response where `"status": "FAILED"` and a payment failure message, proving the system handles gateway declines gracefully without crashing.*
 
 ### 3. Automated Chaos Tests (Advanced Scenarios)
-It is difficult to manually trigger exact millisecond race conditions or crash the server mid-transaction via terminal. Instead, run the **Automated Integration Test Suite**, which spawns concurrent threads to prove the advanced resilience patterns work!
+Because edge cases like exact millisecond race conditions, circuit breaker thresholds, and mid-transaction server crashes cannot be reliably reproduced via manual HTTP requests, I have engineered a robust **Automated Integration Test Suite** to simulate these exact chaos scenarios.
 
 Stop the server (`Ctrl + C`), then run:
 ```bash
