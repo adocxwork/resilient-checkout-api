@@ -43,7 +43,7 @@ Want to see the resilience in action? You can spin up the environment and run th
 
 ### 1. Clone & Start the Environment
 ```bash
-git clone https://github.com/yourusername/resilient-checkout-api.git
+git clone https://github.com/adocxwork/resilient-checkout-api.git
 cd resilient-checkout-api
 
 # 1. Start the PostgreSQL Database

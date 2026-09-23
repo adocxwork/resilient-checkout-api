@@ -29,7 +29,7 @@ public class OrderProcessApplication {
                         .stockQuantity(10)
                         .build();
                 productRepository.save(product);
-                System.out.println("✅ Inserted Test Product into Database!");
+                System.out.println("Inserted Test Product into Database!");
             }
         };
     }
