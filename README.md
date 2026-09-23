@@ -111,3 +111,17 @@ Simulated using `k6` with 100 Virtual Users over 30 seconds against the local Do
 * **Single Point of Failure**: Idempotency is currently enforced via the primary PostgreSQL node. A distributed cache (like Redis) with a TTL would scale much better for high-throughput idempotency checking.
 * **Database Connection Pool Exhaustion**: Because we hold a database connection while waiting for the external network payment call, a massive spike in payment gateway latency could theoretically exhaust the HikariCP connection pool before the Circuit Breaker trips.
 * **Mock Payment Gateway**: The payment gateway is simulated locally. Real-world network latencies and TLS handshakes would lower the raw throughput of this synchronous design.
+
+### 5. Teardown & Data Management
+
+To gracefully shut down the Spring Boot application, send an interrupt signal (`Ctrl + C`) in the terminal.
+
+To stop the PostgreSQL infrastructure while **preserving your data** (via Docker volumes) for the next development session:
+```bash
+docker-compose down
+```
+
+If you need to completely **wipe the local database state** and start fresh (e.g., to clear all test orders and reset inventory):
+```bash
+docker-compose down -v
+```
