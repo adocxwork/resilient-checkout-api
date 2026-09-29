@@ -92,26 +92,28 @@ public class OrderService {
         return updateOrderPaymentStatus(order.getId(), paymentResult);
     }
 
-    @Transactional
     public Order updateOrderPaymentStatus(Long orderId, PaymentClient.PaymentResult paymentResult) {
-        Order order = orderRepository.findById(orderId)
-                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+        return transactionTemplate.execute(status -> {
+            Order order = orderRepository.findById(orderId)
+                    .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
 
-        // Ensure we don't transition backward or override a finalized state
-        if (order.getStatus() == OrderStatus.PAID || order.getStatus() == OrderStatus.FAILED) {
-            log.warn("Order {} is already in final state: {}", order.getId(), order.getStatus());
-            return order;
-        }
+            // Ensure we don't transition backward or override a finalized state
+            if (order.getStatus() == OrderStatus.PAID || order.getStatus() == OrderStatus.FAILED) {
+                log.warn("Order {} is already in final state: {}", order.getId(), order.getStatus());
+                return order;
+            }
 
-        if (paymentResult.status() == PaymentClient.PaymentStatus.SUCCESS) {
-            order.setStatus(OrderStatus.PAID);
-            order.setPaymentReference(paymentResult.transactionId());
-            log.info("Order {} payment successful. Reference: {}", order.getId(), paymentResult.transactionId());
-        } else {
-            order.setStatus(OrderStatus.FAILED);
-            log.error("Order {} payment failed. Reason: {}", order.getId(), paymentResult.errorMessage());
-        }
+            if (paymentResult.status() == PaymentClient.PaymentStatus.SUCCESS) {
+                order.setStatus(OrderStatus.PAID);
+                order.setPaymentReference(paymentResult.transactionId());
+                log.info("Order {} payment successful. Reference: {}", order.getId(), paymentResult.transactionId());
+            } else {
+                order.setStatus(OrderStatus.FAILED);
+                log.error("Order {} payment failed. Reason: {}. Restoring stock.", order.getId(), paymentResult.errorMessage());
+                inventoryService.restoreStock(order.getProductId(), order.getQuantity());
+            }
 
-        return orderRepository.save(order);
+            return orderRepository.save(order);
+        });
     }
 }

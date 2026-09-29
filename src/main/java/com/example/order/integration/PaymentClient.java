@@ -3,13 +3,11 @@ package com.example.order.integration;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 
 @Component
 @Slf4j
 public class PaymentClient {
-
-    private final Random random = new Random();
 
     public enum PaymentStatus {
         SUCCESS,
@@ -27,7 +25,7 @@ public class PaymentClient {
         simulateNetworkDelay();
         
         // Randomly simulate failures
-        int chance = random.nextInt(100);
+        int chance = ThreadLocalRandom.current().nextInt(100);
         
         if (chance < 10) {
             // 10% chance of hard failure (exception, representing 500 or timeout)
@@ -52,9 +50,7 @@ public class PaymentClient {
         
         simulateNetworkDelay();
         
-        // In a real system, the gateway knows if it succeeded or not based on the key
-        // For simulation, we'll assume it succeeded 80% of the time it got stuck
-        if (random.nextInt(100) < 80) {
+        if (ThreadLocalRandom.current().nextInt(100) < 80) {
             return new PaymentResult(PaymentStatus.SUCCESS, "TXN-" + java.util.UUID.randomUUID().toString(), null);
         } else {
             return new PaymentResult(PaymentStatus.FAILED, null, "Payment not found or failed");
@@ -64,7 +60,7 @@ public class PaymentClient {
     private void simulateNetworkDelay() {
         try {
             // Random delay between 100ms and 1000ms
-            Thread.sleep(100 + random.nextInt(900));
+            Thread.sleep(100 + ThreadLocalRandom.current().nextInt(900));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

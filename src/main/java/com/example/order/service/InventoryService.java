@@ -33,4 +33,15 @@ public class InventoryService {
         product.setStockQuantity(product.getStockQuantity() - quantity);
         return productRepository.save(product);
     }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void restoreStock(Long productId, int quantity) {
+        log.info("Restoring {} units to product {}", quantity, productId);
+        
+        Product product = productRepository.findByIdForUpdate(productId)
+                .orElseThrow(() -> new ProductNotFoundException("Product " + productId + " not found"));
+
+        product.setStockQuantity(product.getStockQuantity() + quantity);
+        productRepository.save(product);
+    }
 }
