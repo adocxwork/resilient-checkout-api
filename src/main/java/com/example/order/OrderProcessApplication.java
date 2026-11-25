@@ -1,17 +1,15 @@
 package com.example.order;
 
+import com.example.order.config.CheckoutSettings;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.scheduling.annotation.EnableScheduling;
-
-import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
-import com.example.order.domain.Product;
-import com.example.order.repository.ProductRepository;
-import java.math.BigDecimal;
+
+import java.time.Clock;
 
 @SpringBootApplication
-@EnableScheduling
+@EnableConfigurationProperties(CheckoutSettings.class)
 public class OrderProcessApplication {
 
     public static void main(String[] args) {
@@ -19,18 +17,7 @@ public class OrderProcessApplication {
     }
 
     @Bean
-    public CommandLineRunner seedDatabase(ProductRepository productRepository) {
-        return args -> {
-            if (productRepository.count() == 0) {
-                Product product = Product.builder()
-                        .name("MacBook Pro")
-                        .sku("MAC-123")
-                        .price(BigDecimal.valueOf(2000.00))
-                        .stockQuantity(10)
-                        .build();
-                productRepository.save(product);
-                System.out.println("Inserted Test Product into Database!");
-            }
-        };
+    Clock clock() {
+        return Clock.systemUTC();
     }
 }

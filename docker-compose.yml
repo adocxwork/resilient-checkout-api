@@ -1,15 +1,42 @@
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: order-process-postgres
     ports:
-      - "5433:5432"
+      - "127.0.0.1:${CHECKOUT_DB_PORT:-5433}:5432"
     environment:
       POSTGRES_DB: orderdb
       POSTGRES_USER: checkout_user
-      POSTGRES_PASSWORD: checkout_pass
+      POSTGRES_PASSWORD: ${CHECKOUT_DB_PASSWORD:-checkout_pass}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "checkout_user", "-d", "orderdb"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    ports:
+      - "127.0.0.1:${CHECKOUT_HTTP_PORT:-8080}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: demo
+      SERVER_ADDRESS: 0.0.0.0
+      CHECKOUT_DB_URL: jdbc:postgresql://postgres:5432/orderdb
+      CHECKOUT_DB_PASSWORD: ${CHECKOUT_DB_PASSWORD:-checkout_pass}
+      CHECKOUT_ALICE_USERNAME: ${CHECKOUT_ALICE_USERNAME:-alice}
+      CHECKOUT_BOB_USERNAME: ${CHECKOUT_BOB_USERNAME:-bob}
+      CHECKOUT_ALICE_PASSWORD: ${CHECKOUT_ALICE_PASSWORD:-alice-local-demo}
+      CHECKOUT_BOB_PASSWORD: ${CHECKOUT_BOB_PASSWORD:-bob-local-demo}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/actuator/health/readiness"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
 
 volumes:
   postgres-data:

@@ -1,19 +1,30 @@
 package com.example.order.service;
 
+import com.example.order.config.CheckoutSettings;
 import com.example.order.domain.Order;
 import com.example.order.domain.OrderStatus;
+import com.example.order.domain.PaymentScenario;
 import com.example.order.domain.Product;
-import com.example.order.integration.PaymentClient;
+import com.example.order.exception.IdempotencyConflictException;
+import com.example.order.exception.OrderNotFoundException;
+import com.example.order.integration.PaymentGateway;
 import com.example.order.integration.PaymentIntegrationService;
+import com.example.order.integration.PaymentOutcomeUnknownException;
+import com.example.order.integration.PaymentUnavailableException;
 import com.example.order.repository.OrderRepository;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
+import java.util.Objects;
 import java.util.Optional;
 
 @Service
@@ -21,99 +32,96 @@ import java.util.Optional;
 @Slf4j
 public class OrderService {
 
-    private final OrderRepository orderRepository;
-    private final InventoryService inventoryService;
-    private final PaymentIntegrationService paymentIntegrationService;
-    private final TransactionTemplate transactionTemplate;
+    public record CheckoutResult(Order order, boolean created) {}
 
-    /**
-     * Entry point for order creation. Handles idempotency and orchestrates the flow.
-     */
-    public Order placeOrder(String idempotencyKey, String customerId, Long productId, int quantity) {
-        log.info("Processing order request. Key: {}, Customer: {}, Product: {}, Qty: {}", 
-                idempotencyKey, customerId, productId, quantity);
+    private final OrderRepository orders;
+    private final InventoryService inventory;
+    private final PaymentIntegrationService payments;
+    private final TransactionTemplate transaction;
+    private final JdbcTemplate jdbc;
+    private final Clock clock;
+    private final CheckoutSettings settings;
 
-        // 1. Idempotency Check
-        Optional<Order> existingOrder = orderRepository.findByIdempotencyKey(idempotencyKey);
-        if (existingOrder.isPresent()) {
-            log.info("Duplicate request detected for key {}. Returning existing order.", idempotencyKey);
-            return existingOrder.get();
+    @Transactional(propagation = Propagation.NEVER)
+    public CheckoutResult placeOrder(String customerId, String key, long productId, int quantity,
+                                     PaymentScenario scenario) {
+        CheckoutResult reservation = Objects.requireNonNull(transaction.execute(status ->
+                reserve(customerId, key, productId, quantity, scenario)));
+        if (reservation.created()) {
+            return new CheckoutResult(attemptPayment(reservation.order(), false), true);
+        }
+        return reservation;
+    }
+
+    private CheckoutResult reserve(String customerId, String key, long productId, int quantity,
+                                   PaymentScenario scenario) {
+        // Acquire the key before inventory. A replay can then succeed even after the last unit is taken.
+        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", rows -> {
+            rows.next();
+            return null;
+        }, customerId + ":" + key);
+
+        Optional<Order> replay = orders.findByCustomerIdAndIdempotencyKey(customerId, key);
+        if (replay.isPresent()) {
+            Order existing = replay.get();
+            PaymentScenario original = Objects.requireNonNullElse(existing.getPaymentScenario(), PaymentScenario.SUCCESS);
+            if (existing.getProductId() != productId || existing.getQuantity() != quantity || original != scenario) {
+                throw new IdempotencyConflictException();
+            }
+            return new CheckoutResult(existing, false);
         }
 
-        // 2. Prepare Phase: Create order in PAYMENT_PENDING state (within a transaction)
-        Order pendingOrder;
+        Product product = inventory.deductStock(productId, quantity);
+        Instant now = clock.instant();
+        Order order = Order.builder()
+                .customerId(customerId)
+                .idempotencyKey(key)
+                .productId(productId)
+                .quantity(quantity)
+                .totalAmount(product.getPrice().multiply(BigDecimal.valueOf(quantity)))
+                .paymentScenario(scenario)
+                .createdAt(now)
+                .nextAttemptAt(now.plusSeconds(settings.initialDelaySeconds()))
+                .build();
+        return new CheckoutResult(orders.save(order), true);
+    }
+
+    public Order getOrder(String customerId, long orderId) {
+        return orders.findByIdAndCustomerId(orderId, customerId).orElseThrow(OrderNotFoundException::new);
+    }
+
+    @Transactional(propagation = Propagation.NEVER)
+    public void reconcile(Order order) {
+        attemptPayment(order, true);
+    }
+
+    private Order attemptPayment(Order order, boolean checkExistingPayment) {
+        PaymentGateway.Result result;
         try {
-            pendingOrder = transactionTemplate.execute(status -> {
-                // Double check within transaction
-                if (orderRepository.findByIdempotencyKey(idempotencyKey).isPresent()) {
-                    throw new DataIntegrityViolationException("Duplicate key");
-                }
-
-                // Deduct inventory (Uses pessimistic lock to prevent overselling)
-                Product product = inventoryService.deductStock(productId, quantity);
-
-                BigDecimal totalAmount = product.getPrice().multiply(BigDecimal.valueOf(quantity));
-
-                // Create Order record
-                Order order = Order.builder()
-                        .customerId(customerId)
-                        .idempotencyKey(idempotencyKey)
-                        .productId(productId)
-                        .quantity(quantity)
-                        .totalAmount(totalAmount)
-                        .status(OrderStatus.PAYMENT_PENDING)
-                        .build();
-
-                return orderRepository.saveAndFlush(order);
-            });
-        } catch (DataIntegrityViolationException e) {
-            // Concurrent insert caught by DB unique constraint
-            log.warn("Concurrent duplicate request detected for key {} via DB constraint.", idempotencyKey);
-            return orderRepository.findByIdempotencyKey(idempotencyKey)
-                    .orElseThrow(() -> new IllegalStateException("Order should exist but not found"));
+            result = checkExistingPayment
+                    ? payments.lookup(order.getId()).orElseGet(() -> payments.submit(order))
+                    : payments.submit(order);
+        } catch (PaymentUnavailableException | PaymentOutcomeUnknownException | CallNotPermittedException e) {
+            log.info("Order {} remains pending after {}", order.getId(), e.getClass().getSimpleName());
+            return order;
         }
-
-        if (pendingOrder == null) {
-            throw new IllegalStateException("Failed to create pending order");
-        }
-
-        // 3. Execution Phase: Process Payment (Outside the DB lock/transaction!)
-        // This is crucial: we don't want to hold database locks while waiting on network calls.
-        return executePaymentAndUpdateState(pendingOrder);
+        return finalizePayment(order.getId(), result);
     }
 
-    public Order executePaymentAndUpdateState(Order order) {
-        log.info("Initiating payment for Order ID: {}, Amount: {}", order.getId(), order.getTotalAmount());
-        
-        PaymentClient.PaymentResult paymentResult = paymentIntegrationService.process(
-                order.getIdempotencyKey(), order.getTotalAmount()
-        );
-
-        return updateOrderPaymentStatus(order.getId(), paymentResult);
-    }
-
-    public Order updateOrderPaymentStatus(Long orderId, PaymentClient.PaymentResult paymentResult) {
-        return transactionTemplate.execute(status -> {
-            Order order = orderRepository.findById(orderId)
-                    .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
-
-            // Ensure we don't transition backward or override a finalized state
-            if (order.getStatus() == OrderStatus.PAID || order.getStatus() == OrderStatus.FAILED) {
-                log.warn("Order {} is already in final state: {}", order.getId(), order.getStatus());
+    public Order finalizePayment(long id, PaymentGateway.Result result) {
+        return Objects.requireNonNull(transaction.execute(status -> {
+            Order order = orders.findByIdForUpdate(id).orElseThrow(OrderNotFoundException::new);
+            if (order.getStatus() != OrderStatus.PAYMENT_PENDING) {
                 return order;
             }
 
-            if (paymentResult.status() == PaymentClient.PaymentStatus.SUCCESS) {
-                order.setStatus(OrderStatus.PAID);
-                order.setPaymentReference(paymentResult.transactionId());
-                log.info("Order {} payment successful. Reference: {}", order.getId(), paymentResult.transactionId());
+            if (result.status() == PaymentGateway.Status.SUCCEEDED) {
+                order.markPaid(result.reference(), clock.instant());
             } else {
-                order.setStatus(OrderStatus.FAILED);
-                log.error("Order {} payment failed. Reason: {}. Restoring stock.", order.getId(), paymentResult.errorMessage());
-                inventoryService.restoreStock(order.getProductId(), order.getQuantity());
+                inventory.restoreStock(order.getProductId(), order.getQuantity());
+                order.markFailed(clock.instant());
             }
-
-            return orderRepository.save(order);
-        });
+            return order;
+        }));
     }
 }

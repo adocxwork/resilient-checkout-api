@@ -177,6 +177,7 @@ verbose "Downloading to: $TMP_DOWNLOAD_DIR/$distributionUrlName"
 
 # select .zip or .tar.gz
 if ! command -v unzip >/dev/null; then
+  [ -z "${distributionSha256Sum-}" ] || die "unzip is required to verify and unpack the Maven distribution"
   distributionUrl="${distributionUrl%.zip}.tar.gz"
   distributionUrlName="${distributionUrl##*/}"
 fi

@@ -1,55 +1,66 @@
 package com.example.order.domain;
 
 import jakarta.persistence.*;
-import lombok.*;
-import org.hibernate.annotations.CreationTimestamp;
-import org.hibernate.annotations.UpdateTimestamp;
+import lombok.AccessLevel;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
-import java.util.UUID;
+import java.time.Instant;
 
 @Entity
-@Table(name = "orders", uniqueConstraints = {
-        @UniqueConstraint(columnNames = "idempotency_key")
-})
+@Table(name = "orders")
 @Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
-@Builder
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Order {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false)
     private String customerId;
-
-    @Column(name = "idempotency_key", nullable = false)
     private String idempotencyKey;
-
-    @Column(nullable = false)
     private Long productId;
-
-    @Column(nullable = false)
-    private Integer quantity;
-
-    @Column(nullable = false)
+    private int quantity;
     private BigDecimal totalAmount;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
     private OrderStatus status;
 
-    @Column(name = "payment_reference")
+    @Enumerated(EnumType.STRING)
+    private PaymentScenario paymentScenario;
+
     private String paymentReference;
+    private Instant createdAt;
+    private Instant updatedAt;
+    private Instant nextAttemptAt;
 
-    @CreationTimestamp
-    @Column(updatable = false)
-    private LocalDateTime createdAt;
+    @Builder
+    public Order(String customerId, String idempotencyKey, Long productId, int quantity, BigDecimal totalAmount,
+                 PaymentScenario paymentScenario, Instant createdAt, Instant nextAttemptAt) {
+        this.customerId = customerId;
+        this.idempotencyKey = idempotencyKey;
+        this.productId = productId;
+        this.quantity = quantity;
+        this.totalAmount = totalAmount;
+        this.status = OrderStatus.PAYMENT_PENDING;
+        this.paymentScenario = paymentScenario;
+        this.createdAt = createdAt;
+        this.updatedAt = createdAt;
+        this.nextAttemptAt = nextAttemptAt;
+    }
 
-    @UpdateTimestamp
-    private LocalDateTime updatedAt;
+    public void markPaid(String reference, Instant now) {
+        status = OrderStatus.PAID;
+        paymentReference = reference;
+        updatedAt = now;
+        nextAttemptAt = null;
+    }
+
+    public void markFailed(Instant now) {
+        status = OrderStatus.FAILED;
+        updatedAt = now;
+        nextAttemptAt = null;
+    }
 }

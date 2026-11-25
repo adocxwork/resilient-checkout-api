@@ -5,43 +5,34 @@ import com.example.order.exception.OutOfStockException;
 import com.example.order.exception.ProductNotFoundException;
 import com.example.order.repository.ProductRepository;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 @RequiredArgsConstructor
-@Slf4j
 public class InventoryService {
 
     private final ProductRepository productRepository;
 
     @Transactional(propagation = Propagation.MANDATORY)
     public Product deductStock(Long productId, int quantity) {
-        log.info("Attempting to deduct {} from product {}", quantity, productId);
-        
-        // Use Pessimistic Write Lock to prevent race conditions
-        Product product = productRepository.findByIdForUpdate(productId)
-                .orElseThrow(() -> new ProductNotFoundException("Product " + productId + " not found"));
-
+        Product product = findLockedProduct(productId);
         if (product.getStockQuantity() < quantity) {
-            log.warn("Not enough stock for product {}. Requested: {}, Available: {}", productId, quantity, product.getStockQuantity());
-            throw new OutOfStockException("Not enough stock available for product " + product.getName());
+            throw new OutOfStockException("Insufficient stock for this product.");
         }
-
         product.setStockQuantity(product.getStockQuantity() - quantity);
-        return productRepository.save(product);
+        return product;
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
     public void restoreStock(Long productId, int quantity) {
-        log.info("Restoring {} units to product {}", quantity, productId);
-        
-        Product product = productRepository.findByIdForUpdate(productId)
-                .orElseThrow(() -> new ProductNotFoundException("Product " + productId + " not found"));
+        Product product = findLockedProduct(productId);
+        product.setStockQuantity(Math.addExact(product.getStockQuantity(), quantity));
+    }
 
-        product.setStockQuantity(product.getStockQuantity() + quantity);
-        productRepository.save(product);
+    private Product findLockedProduct(Long productId) {
+        return productRepository.findByIdForUpdate(productId)
+                .orElseThrow(() -> new ProductNotFoundException("Product not found."));
     }
 }

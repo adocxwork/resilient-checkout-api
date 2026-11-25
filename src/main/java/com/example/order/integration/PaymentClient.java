@@ -1,68 +1,68 @@
 package com.example.order.integration;
 
-import lombok.extern.slf4j.Slf4j;
+import com.example.order.domain.PaymentScenario;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
-import java.util.concurrent.ThreadLocalRandom;
+import java.math.BigDecimal;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.UUID;
 
 @Component
-@Slf4j
-public class PaymentClient {
+public class PaymentClient implements PaymentGateway {
 
-    public enum PaymentStatus {
-        SUCCESS,
-        FAILED
+    private record Entry(BigDecimal amount, Result result) {}
+
+    private static final RowMapper<Entry> PAYMENT_ROW = (row, number) -> new Entry(
+            row.getBigDecimal("amount"),
+            new Result(Status.valueOf(row.getString("status")), row.getString("payment_reference"))
+    );
+
+    private final JdbcTemplate jdbc;
+    private final TransactionTemplate providerTransaction;
+
+    public PaymentClient(JdbcTemplate jdbc, PlatformTransactionManager transactionManager) {
+        this.jdbc = jdbc;
+        providerTransaction = new TransactionTemplate(transactionManager);
+        providerTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
-    public record PaymentResult(PaymentStatus status, String transactionId, String errorMessage) {}
+    @Override
+    public Result submit(long orderId, BigDecimal amount, PaymentScenario scenario) {
+        Status status = scenario == PaymentScenario.DECLINE ? Status.DECLINED : Status.SUCCEEDED;
+        UUID reference = status == Status.SUCCEEDED ? UUID.randomUUID() : null;
+        Optional<Entry> inserted = Objects.requireNonNull(providerTransaction.execute(transaction -> jdbc.query("""
+                INSERT INTO simulated_payments (order_id, amount, status, payment_reference)
+                VALUES (?, ?, ?, CAST(? AS uuid))
+                ON CONFLICT (order_id) DO NOTHING
+                RETURNING amount, status, payment_reference
+                """, PAYMENT_ROW, orderId, amount, status.name(), reference).stream().findFirst()));
 
-    /**
-     * Simulates a payment processing call that can fail, timeout, or succeed.
-     */
-    public PaymentResult processPayment(String idempotencyKey, java.math.BigDecimal amount) {
-        log.info("Simulating payment process for idempotencyKey: {}, amount: {}", idempotencyKey, amount);
-        
-        simulateNetworkDelay();
-        
-        // Randomly simulate failures
-        int chance = ThreadLocalRandom.current().nextInt(100);
-        
-        if (chance < 10) {
-            // 10% chance of hard failure (exception, representing 500 or timeout)
-            log.error("Payment Gateway Timeout / 500 Error!");
-            throw new RuntimeException("Payment Gateway Timeout");
-        } else if (chance < 25) {
-            // 15% chance of business failure (insufficient funds, etc)
-            log.warn("Payment declined");
-            return new PaymentResult(PaymentStatus.FAILED, null, "Insufficient funds");
+        if (inserted.isPresent() && scenario == PaymentScenario.TIMEOUT_AFTER_CHARGE) {
+            // The provider has already committed when the caller loses the response.
+            throw new PaymentOutcomeUnknownException();
         }
 
-        // 75% chance of success
-        log.info("Payment successful");
-        return new PaymentResult(PaymentStatus.SUCCESS, "TXN-" + java.util.UUID.randomUUID().toString(), null);
+        Entry entry = inserted.orElseGet(() -> findEntry(orderId).orElseThrow());
+        if (entry.amount().compareTo(amount) != 0) {
+            throw new IllegalStateException("Payment amount differs from the recorded attempt");
+        }
+        return entry.result();
     }
 
-    /**
-     * Simulates fetching payment status for reconciliation.
-     */
-    public PaymentResult getPaymentStatus(String idempotencyKey) {
-        log.info("Checking payment status for idempotencyKey: {}", idempotencyKey);
-        
-        simulateNetworkDelay();
-        
-        if (ThreadLocalRandom.current().nextInt(100) < 80) {
-            return new PaymentResult(PaymentStatus.SUCCESS, "TXN-" + java.util.UUID.randomUUID().toString(), null);
-        } else {
-            return new PaymentResult(PaymentStatus.FAILED, null, "Payment not found or failed");
-        }
+    @Override
+    public Optional<Result> lookup(long orderId) {
+        return findEntry(orderId).map(Entry::result);
     }
 
-    private void simulateNetworkDelay() {
-        try {
-            // Random delay between 100ms and 1000ms
-            Thread.sleep(100 + ThreadLocalRandom.current().nextInt(900));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+    private Optional<Entry> findEntry(long orderId) {
+        return jdbc.query("""
+                SELECT amount, status, payment_reference FROM simulated_payments WHERE order_id = ?
+                """, PAYMENT_ROW, orderId).stream().findFirst();
     }
 }
