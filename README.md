@@ -195,21 +195,19 @@ The order and catalog routes use Basic auth. A checkout takes a positive `produc
 
 ## Teardown and data management
 
-If the API is running directly through Maven or Java, stop it with **Ctrl+C** first.
-
-**Stop and keep your data**
+**Stop and keep your demo data**
 
 ```bash
 docker compose down
 ```
 
-The PostgreSQL volume keeps your orders, payments, and stock. The next startup reuses it.
+**Discard demo data and generated build files**
 
-**Reset the local demo**
+From the repository root:
 
 ```bash
 docker compose down --volumes
-docker compose up --build --wait
+rm -rf -- target/
 ```
 
-Use this only when you want to delete the Compose project’s local database. A fresh startup recreates the schema and restores the demo catalog to its initial stock.
+This deletes local orders, payments, and stock changes. Both Docker images stay cached for the next demo.
